@@ -10,6 +10,7 @@ const clientId = `person2_${demoUser}_${randomSuffix}`;
 let mqttClient = null;
 let activeAuctionId = localStorage.getItem('sync_auction_id') || '';
 let fetchedItemId = '';
+let fetchedItems = []; // Store fetched items with images
 let token = '';
 let countdownInterval = null;
 let lastRemainingSeconds = null;
@@ -17,7 +18,7 @@ const pendingRequests = new Map();
 const responseTopic = `client/${demoUser}/response`;
 
 // ============= DATA TRACKING =============
-const auctionStats = new Map(); // { auctionId: { highest_bid, bidder_count, bid_history, status, remaining_time } }
+const auctionStats = new Map(); // { auctionId: { highest_bid, bidder_count, bid_history, status, remaining_time, item_name, image_url } }
 const bidderStats = new Map(); // { bidder: { bid_count, total_bid_value, last_bid_time } }
 const trendingBids = []; // Track bids over time for charting
 
@@ -47,6 +48,10 @@ const dom = {
   metricAvgBid: document.getElementById('metric-avg-bid'),
   metricVelocity: document.getElementById('metric-velocity'),
   auctionStatusGrid: document.getElementById('auction-status-grid'),
+  
+  // Current auction item display
+  currentItemImage: document.getElementById('current-item-image'),
+  currentItemName: document.getElementById('current-item-name'),
 };
 
 // ============= HELPERS =============
@@ -114,6 +119,13 @@ function ensureAuctionContext(auctionId) {
   activeAuctionId = auctionId;
   dom.joinAuctionId.value = auctionId;
   localStorage.setItem('sync_auction_id', auctionId);
+  
+  // Update current item display
+  const auctionStats_entry = auctionStats.get(auctionId);
+  if (auctionStats_entry) {
+    dom.currentItemImage.src = auctionStats_entry.image_url;
+    dom.currentItemName.textContent = auctionStats_entry.item_name;
+  }
 }
 
 function updateRemainingSeconds(value) {
@@ -152,12 +164,24 @@ function summarizeAuctionEvent(payload) {
 function trackBid(auctionId, amount, bidder) {
   // Track auction stats
   if (!auctionStats.has(auctionId)) {
+    // Try to find item info from fetched items
+    let itemName = `Item ${auctionId.substring(0, 8)}`;
+    let imageUrl = '/images/placeholder.svg';
+    
+    const foundItem = fetchedItems.find(item => item.id === auctionId);
+    if (foundItem) {
+      itemName = foundItem.name;
+      imageUrl = foundItem.image_url || '/images/placeholder.svg';
+    }
+
     auctionStats.set(auctionId, {
       highest_bid: 0,
       bidder_count: new Set(),
       bid_history: [],
       status: 'OPEN',
       remaining_time: 180,
+      item_name: itemName,
+      image_url: imageUrl,
     });
   }
 
@@ -199,9 +223,15 @@ function updateLeaderboards() {
     const [auctionId, stats] = entry;
     return `
       <div class="leaderboard-item">
-        <span class="rank">#${idx + 1}</span> 
-        ${auctionId.substring(0, 8)}... 
-        <span class="value">${formatRupiah(stats.highest_bid)}</span>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <img src="${stats.image_url}" alt="${stats.item_name}" style="width: 40px; height: 40px; border-radius: 4px; object-fit: cover; background: #0a0f18;">
+          <div style="flex: 1;">
+            <span class="rank">#${idx + 1}</span>
+            <div style="font-size: 0.85rem; color: #95a8c1;">${stats.item_name.substring(0, 15)}</div>
+            <div style="font-size: 0.75rem; color: #666;">ID: ${auctionId.substring(0, 8)}...</div>
+          </div>
+          <span class="value">${formatRupiah(stats.highest_bid)}</span>
+        </div>
       </div>
     `;
   }).join('');
@@ -338,18 +368,21 @@ function updateAuctionStatusGrid() {
     const statusClass = stats.status.toLowerCase();
     return `
       <div class="auction-card">
-        <div class="state ${statusClass}">${stats.status}</div>
-        <div class="auction-info">
-          <strong>Item:</strong> ${auctionId.substring(0, 8)}...
-        </div>
-        <div class="auction-info auction-price">
-          ${formatRupiah(stats.highest_bid)}
-        </div>
-        <div class="auction-info auction-time">
-          ⏱️ ${stats.remaining_time}s remaining
-        </div>
-        <div class="auction-info" style="color: #95a8c1; font-size: 0.8rem;">
-          👥 ${stats.bidder_count.size} bidders
+        <img src="${stats.image_url}" alt="${stats.item_name}" style="width: 100%; height: 120px; object-fit: cover; border-radius: 4px 4px 0 0; background: #0a0f18;">
+        <div style="padding: 10px;">
+          <div class="state ${statusClass}" style="margin-bottom: 8px;">${stats.status}</div>
+          <div class="auction-info" style="font-weight: bold; margin-bottom: 5px;">
+            ${stats.item_name.substring(0, 25)}
+          </div>
+          <div class="auction-info auction-price" style="font-size: 1.1rem; margin: 8px 0;">
+            ${formatRupiah(stats.highest_bid)}
+          </div>
+          <div class="auction-info auction-time" style="font-size: 0.85rem;">
+            ⏱️ ${stats.remaining_time}s
+          </div>
+          <div class="auction-info" style="color: #95a8c1; font-size: 0.8rem; margin-top: 5px;">
+            👥 ${stats.bidder_count.size} bidders
+          </div>
         </div>
       </div>
     `;
@@ -490,6 +523,7 @@ function handleCommandResponse(commandName, payload) {
     case 'get_items': {
       const items = payload?.items || payload?.data?.items || [];
       if (Array.isArray(items) && items.length > 0) {
+        fetchedItems = items; // Store all items with their images
         fetchedItemId = items[0].id;
         logActivity(`CATALOG: item tersedia, default auction item = ${fetchedItemId}`);
       }

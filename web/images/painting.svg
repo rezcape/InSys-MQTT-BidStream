@@ -1,0 +1,18 @@
+<svg width="200" height="200" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Frame -->
+  <rect x="20" y="20" width="160" height="160" fill="#8B4513" stroke="#654321" stroke-width="3"/>
+  <rect x="25" y="25" width="150" height="150" fill="#D2B48C" stroke="#8B4513" stroke-width="2"/>
+  
+  <!-- Canvas -->
+  <rect x="30" y="30" width="140" height="140" fill="#FFF8DC"/>
+  
+  <!-- Abstract painting -->
+  <circle cx="60" cy="60" r="25" fill="#FF6B6B" opacity="0.8"/>
+  <circle cx="130" cy="70" r="30" fill="#4ECDC4" opacity="0.8"/>
+  <circle cx="80" cy="120" r="20" fill="#FFE66D" opacity="0.8"/>
+  <polygon points="50,140 100,110 150,140" fill="#95E1D3" opacity="0.6"/>
+  <line x1="40" y1="100" x2="150" y2="100" stroke="#000" stroke-width="2" opacity="0.3"/>
+  
+  <!-- Title -->
+  <text x="100" y="185" font-size="14" text-anchor="middle" fill="#654321" font-weight="bold">ABSTRACT ART</text>
+</svg>
