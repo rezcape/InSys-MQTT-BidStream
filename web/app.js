@@ -1,5 +1,6 @@
-const MQTT_BROKER = 'wss://broker.hivemq.com:8884/mqtt';
-let mqttClient;
+const WS_URL = 'ws://localhost:8080';
+let ws;
+const reconnectDelay = 3000;
 let activeAuctionId = '';
 let fetchedItemId = ''; 
 let token = ''; // Store backend JWT token
@@ -34,7 +35,7 @@ function startVisualCountdown() {
 
   countdownInterval = setInterval(() => {
     const elapsed = Math.floor((Date.now() - parseInt(openedAt)) / 1000);
-    const DURATION = 180; 
+    const DURATION = 180; // Must match duration in btnOpen click
     let remaining = DURATION - elapsed;
 
     if (remaining <= 0) {
@@ -65,13 +66,17 @@ function showResponseStatus(message, isError = false) {
   setTimeout(() => { dom.commandResponse.textContent = ''; }, 4000);
 }
 
-function sendCommand(commandName, payload = {}) {
-  if (!mqttClient || !mqttClient.connected) {
-    alert("Cannot send command: MQTT is disconnected.");
+function sendCommand(type, payload = {}) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    alert("Cannot send command: WebSocket is disconnected.");
     return;
   }
-  const topic = `client/${demoUser}/command/${commandName}`;
-  mqttClient.publish(topic, JSON.stringify(payload));
+  const message = JSON.stringify({
+    type: type,
+    requestId: `req-${Math.floor(Math.random() * 10000)}`,
+    payload: payload
+  });
+  ws.send(message);
 }
 
 function logActivity(message) {
@@ -98,162 +103,195 @@ function setAuctionState(state) {
   }
 }
 
-function connectMQTT() {
-  // Demo user random ID
-  demoUser = `user_${Math.floor(Math.random() * 9999)}`;
-  
-  logActivity(`System: Connecting to MQTT Broker ${MQTT_BROKER}...`);
-  mqttClient = mqtt.connect(MQTT_BROKER);
+function connectWebSocket() {
+  ws = new WebSocket(WS_URL);
 
-  mqttClient.on('connect', () => {
-    dom.connStatus.textContent = 'Connected (MQTT)';
+  ws.onopen = () => {
+    dom.connStatus.textContent = 'Connected';
     dom.connStatus.className = 'status-conn connected';
-    logActivity('System: MQTT connected successfully.');
+    logActivity('System: WebSocket connected successfully to ' + WS_URL);
     
-    // Subscribe to results of our commands
-    mqttClient.subscribe(`client/${demoUser}/result/#`);
-    mqttClient.subscribe(`client/${demoUser}/error`);
+    // Automatically fetch catalog items
+    sendCommand('catalog.get_items');
     
-    // Subscribe to general catalog events
-    mqttClient.subscribe(`catalog/events`);
-
-    // Automatically register and login
-    sendCommand('register', { username: demoUser, password: 'password123' });
+    // Automatically register and login a demo user so we get a valid JWT token
+    demoUser = `user_${Math.floor(Math.random() * 9999)}`;
+    sendCommand('auth.register', { username: demoUser, password: 'password123' });
     setTimeout(() => {
-       sendCommand('login', { username: demoUser, password: 'password123' });
-       sendCommand('get_items');
+       sendCommand('auth.login', { username: demoUser, password: 'password123' });
     }, 500);
-  });
+  };
 
-  mqttClient.on('close', () => {
+  ws.onclose = () => {
     dom.connStatus.textContent = 'Disconnected, retrying...';
     dom.connStatus.className = 'status-conn disconnected';
-    logActivity('System Error: MQTT connection closed.');
-  });
+    logActivity('System Error: Connection closed. Attempting reconnect in 3s...');
+    setTimeout(connectWebSocket, reconnectDelay);
+  };
 
-  mqttClient.on('message', (topic, message) => {
+  ws.onmessage = (event) => {
     try {
-      const data = JSON.parse(message.toString());
-      handleIncomingEvent(topic, data);
+      const data = JSON.parse(event.data);
+      handleIncomingEvent(data);
     } catch (e) {
-      console.warn('Failed to parse incoming message:', message.toString());
+      console.warn('Failed to parse incoming message:', event.data);
     }
-  });
+  };
 }
 
-function subscribeToAuction(auctionId) {
-  if (!auctionId || !mqttClient) return;
-  mqttClient.subscribe(`auction/item/${auctionId}/status`);
-  mqttClient.subscribe(`auction/item/${auctionId}/bid/highest`);
-  mqttClient.subscribe(`auction/item/${auctionId}/events`);
-  logActivity(`System: Subscribed to topics for Auction ${auctionId}`);
-}
-
-function handleIncomingEvent(topic, payload) {
-  // Check for command errors
-  if (topic.endsWith('/error')) {
-    const errorMsg = payload.error || "Unknown Error";
+function handleIncomingEvent(data) {
+  // 1. Raw Message without Type
+  if (!data.type && data.message) {
+    logActivity(`SERVER INIT: ${data.message}`);
+    return;
+  }
+  
+  // 2. Global Error Catching
+  if (data.ok === false) {
+    const errorMsg = data.message || (data.payload && data.payload.message) || "Unknown Error";
     showResponseStatus(`Error: ${errorMsg}`, true);
     logActivity(`ERROR: ${errorMsg}`);
     return;
   }
-
-  // Handle Command Results
-  if (topic.includes('/result/')) {
-    const command = topic.split('/').pop();
-    
-    if (command === 'login') {
-      if (payload.token) {
-        token = payload.token;
-        logActivity(`System: Got valid authentication token.`);
-      }
-    } 
-    else if (command === 'get_items') {
-      if (payload.items && payload.items.length > 0) {
-        fetchedItemId = payload.items[0].id;
-        logActivity(`System: Fetched Catalog Item ID ready for auction!`);
-      }
-    }
-    else if (command === 'open_auction') {
-      if (payload.auction_id) {
-         activeAuctionId = payload.auction_id;
-         dom.joinAuctionId.value = activeAuctionId; 
-         logActivity(`Action Success: Auction Opened -> ${activeAuctionId}`);
-         localStorage.setItem('sync_auction_opened_at', Date.now().toString()); 
-         setAuctionState('OPEN');
-         localStorage.setItem('sync_auction_id', activeAuctionId);
-         subscribeToAuction(activeAuctionId);
-      }
-    }
-    else if (command === 'join_auction') {
-      logActivity(`Action Success: Joined Auction ${payload.auction_id || activeAuctionId}`);
-      showResponseStatus("Joined Successfully!");
-      subscribeToAuction(payload.auction_id || activeAuctionId);
-    }
-    else if (command === 'place_bid') {
-      logActivity(`Action Success: Bid Placed of Rp${dom.bidAmount.value}`);
-      showResponseStatus("Bid Placed!");
-    }
+  
+  if (data.type && data.type.includes('error')) {
+    const errorMsg = (data.payload && data.payload.message) || data.message || "Error";
+    showResponseStatus(errorMsg, true);
+    logActivity(`ERROR: ${errorMsg}`);
     return;
   }
 
-  // Handle Auction Events
-  if (topic === 'catalog/events') {
-    const evType = String(payload.event_type || '').toUpperCase();
-    if (evType.includes('OPENED') && payload.auction_id) {
-        activeAuctionId = payload.auction_id;
-        dom.joinAuctionId.value = activeAuctionId;
-        subscribeToAuction(activeAuctionId);
-    }
-    logActivity(`CATALOG EVENT: Auction ${payload.auction_id} is ${evType}`);
-  }
-  else if (topic.includes('/status')) {
-    setAuctionState(payload.status);
-  }
-  else if (topic.includes('/bid/highest')) {
-    dom.highestAmount.textContent = formatRupiah(payload.amount);
-    dom.highestBidder.textContent = payload.bidder || 'Anonymous';
-  }
-  else if (topic.includes('/events')) {
-    const auctionEv = String(payload.event_type || '').toUpperCase();
-    logActivity(`AUCTION EVENT: ${auctionEv}`);
+  const type = data.type;
+  const payload = data.payload || {};
+
+  switch(type) {
+    case 'auth.login.result':
+      const authData = payload.data || data.data;
+      if (authData && authData.token) {
+        token = authData.token;
+        logActivity(`System: Got valid authentication token for ${demoUser}.`);
+      }
+      break;
+
+    case 'catalog.event':
+      const evType = String(payload.event_type || '').toUpperCase();
+      if (evType.includes('OPENED')) {
+         setAuctionState('OPEN');
+         // Auto-sync the auction ID for other browser tabs!
+         if (payload.auction_id) {
+            activeAuctionId = payload.auction_id;
+            dom.joinAuctionId.value = activeAuctionId;
+         }
+      }
+      if (evType.includes('CLOSING')) setAuctionState('CLOSING');
+      if (evType.includes('CLOSED')) setAuctionState('CLOSED');
+      logActivity(`CATALOG EVENT: Auction ${payload.auction_id} is ${evType}`);
+      break;
+
+    case 'auction.update':
+       if (payload.highest_amount !== undefined) {
+          dom.highestAmount.textContent = formatRupiah(payload.highest_amount);
+          dom.highestBidder.textContent = payload.highest_bidder || 'Anonymous';
+       }
+       if (payload.event_type) {
+          const auctionEv = String(payload.event_type || '').toUpperCase();
+          if (auctionEv.includes('CLOSING')) setAuctionState('CLOSING');
+          else if (auctionEv.includes('CLOSED')) setAuctionState('CLOSED');
+          else setAuctionState('OPEN');
+       }
+       break;
+
+    case 'system.alert': 
+    case 'system.connected':
+      if (payload.message || data.message) {
+        logActivity(`SYSTEM: ${payload.message || data.message}`);
+      }
+      break;
+
+    case 'catalog.get_items.result':
+      if (payload && payload.data && Array.isArray(payload.data.items) && payload.data.items.length > 0) {
+        fetchedItemId = payload.data.items[0].id;
+        logActivity(`System: Fetched Catalog Item ID ready for auction!`);
+      } else if (payload && Array.isArray(payload.items) && payload.items.length > 0) {
+        fetchedItemId = payload.items[0].id;
+        logActivity(`System: Fetched Catalog Item ID ready for auction!`);
+      } else if (data.data && Array.isArray(data.data.items) && data.data.items.length > 0) {
+        fetchedItemId = data.data.items[0].id;
+        logActivity(`System: Fetched Catalog Item ID ready for auction!`);
+      }
+      break;
+
+    case 'catalog.open_auction.result':
+      const resultData = payload.data || data.data; 
+      if (resultData && resultData.auction_id) {
+         activeAuctionId = resultData.auction_id;
+         dom.joinAuctionId.value = activeAuctionId; 
+         logActivity(`Action Success: Auction Opened -> ${activeAuctionId}`);
+         localStorage.setItem('sync_auction_opened_at', Date.now().toString()); // Set absolute timer start!
+         setAuctionState('OPEN');
+         // Broadcast to other tabs!
+         localStorage.setItem('sync_auction_id', activeAuctionId);
+      }
+      break;
+
+    // Provide explicit feedback for Join and Bid actions so UI doesn't seem unresponsive
+    case 'auction.joined':
+    case 'auction.join.result':
+      const joinData = payload.data || data.data || payload; 
+      logActivity(`Action Success: Joined Auction ${joinData.auction_id || activeAuctionId}`);
+      showResponseStatus("Joined Successfully!");
+      break;
+
+    case 'auction.place_bid.result':
+      logActivity(`Action Success: Bid Placed of Rp${dom.bidAmount.value}`);
+      showResponseStatus("Bid Placed!");
+      break;
+
+    default:
+      if (type && !type.includes('.result') && !type.includes('.heartbeat')) {
+         logActivity(`EVENT [${type}]: ${JSON.stringify(payload)}`);
+      }
+      break;
   }
 }
 
 // Interacting
 dom.btnOpen.addEventListener('click', () => {
   if (!fetchedItemId) {
-    alert("I haven't fetched any items from the catalog yet!");
+    alert("I haven't fetched any items from the catalog yet! Trying to fetch one first...");
+    sendCommand('catalog.get_items');
     return;
   }
-  sendCommand('open_auction', {
+  sendCommand('catalog.open_auction', {
     item_id: fetchedItemId,
-    duration_seconds: 180 
+    duration_seconds: 180 // Increased to 3 minutes for a longer bidding fight demo
   });
-  showResponseStatus("Sent: open_auction");
+  showResponseStatus("Sent: catalog.open_auction");
 });
 
 dom.btnJoin.addEventListener('click', () => {
   const auctionId = dom.joinAuctionId.value.trim();
   if (!auctionId) return alert("Provide an Auction ID");
-  sendCommand('join_auction', { 
+  // The backend requires the token to verify who is joining
+  sendCommand('auction.join', { 
     auction_id: auctionId,
     token: token 
   });
-  showResponseStatus("Sent: join_auction");
+  showResponseStatus("Sent: auction.join");
 });
 
 dom.btnBid.addEventListener('click', () => {
   const amountStr = dom.bidAmount.value.trim();
   if (!amountStr) return alert("Enter bid amount");
   
-  sendCommand('place_bid', {
+  // The backend requires the token user to perfectly match the bidder_name in the bid
+  sendCommand('auction.place_bid', {
     auction_id: dom.joinAuctionId.value.trim() || activeAuctionId,
     bidder_name: demoUser,
     amount: parseInt(amountStr, 10),
     token: token
   });
-  showResponseStatus("Sent: place_bid");
+  showResponseStatus("Sent: auction.place_bid");
 });
 
 // Front-End Demo Hack: Sync Auction ID across browser tabs instantly!
@@ -262,17 +300,18 @@ window.addEventListener('storage', (e) => {
     activeAuctionId = e.newValue;
     dom.joinAuctionId.value = activeAuctionId;
     setAuctionState('OPEN');
-    subscribeToAuction(activeAuctionId);
     logActivity(`System Sync: Received new Auction ID from Admin window!`);
   }
 });
 
 // Init
 window.addEventListener('DOMContentLoaded', () => {
+  // If this tab was opened late, grab the already synced ID from storage!
   const latecomerId = localStorage.getItem('sync_auction_id');
   if (latecomerId) {
     activeAuctionId = latecomerId;
     dom.joinAuctionId.value = activeAuctionId;
   }
-  connectMQTT();
+  
+  connectWebSocket();
 });
