@@ -1,0 +1,33 @@
+{
+  "name": "insys-websocket-bidstream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WebSocket gateway for InSys gRPC BidStream",
+  "main": "dist/index.js",
+  "scripts": {
+    "setup": "npm install && npm --prefix grpc-backend install",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "grpc:auth": "npm --prefix grpc-backend run auth",
+    "grpc:catalog": "npm --prefix grpc-backend run catalog",
+    "grpc:bidding": "npm --prefix grpc-backend run bidding",
+    "dev:stack": "concurrently -k -n AUTH,CATALOG,BIDDING,GATEWAY -c green,blue,magenta,cyan \"npm:grpc:auth\" \"npm:grpc:catalog\" \"npm:grpc:bidding\" \"npm:dev\"",
+    "dev:web": "http-server ./web -p 5173 -c-1",
+    "smoke:ws": "node scripts/ws-smoke.js",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.10.0",
+    "@grpc/proto-loader": "^0.7.10",
+    "dotenv": "^16.4.5",
+    "mqtt": "^5.5.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "@types/node": "^20.17.47",
+    "http-server": "^14.1.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.8.3"
+  }
+}

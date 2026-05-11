@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Event-Driven Web UI Demo</title>
+  <!-- Assuming existing styles.css is present -->
+  <link rel="stylesheet" href="./styles.css" />
+  <style>
+    /* Simple fallbacks if styles.css doesn't cover these */
+    body { font-family: monospace, sans-serif; padding: 20px; background: #0f1621; color: #fff;}
+    .container { max-width: 800px; margin: 0 auto; }
+    .card { background: #1c2636; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    h2 { margin-top: 0; color: #2aa8ff; }
+    .status-conn { font-weight: bold; padding: 5px 10px; border-radius: 4px; display: inline-block; margin-bottom: 20px; }
+    .connected { background: #00ca65; color: #0f1621; }
+    .disconnected { background: #ca0032; color: #fff; }
+    
+    /* Component A Styles */
+    .state { font-weight: bold; font-size: 1.2rem; padding: 5px 10px; border-radius: 4px; }
+    .state.open { background: #00ca65; color: #000; }
+    .state.closing { background: #ffa600; color: #000; }
+    .state.closed { background: #ca0032; color: #fff; }
+    .state.waiting { background: #666; color: #fff; }
+
+    /* Component C Styles */
+    #event-log { list-style: none; padding: 0; height: 150px; overflow-y: auto; background: #0a0f18; padding: 10px; border-radius: 4px;}
+    #event-log li { margin-bottom: 5px; font-size: 0.9rem; border-bottom: 1px solid #1c2636; padding-bottom: 5px; }
+
+    /* Command Panel Styles */
+    .btn { background: #2aa8ff; color: #fff; border: none; padding: 8px 16px; cursor: pointer; border-radius: 4px; font-weight: bold; }
+    .btn:hover { background: #1a88dd; }
+    input { padding: 8px; margin-right: 10px; margin-bottom: 10px; border-radius: 4px; border: 1px solid #444; background: #0a0f18; color: #fff;}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>WebSocket UI</h1>
+    <span id="conn-status" class="status-conn disconnected">Disconnected</span>
+
+    <!-- Component A: Auction Status -->
+    <div class="card">
+      <h2>Component A: Auction Status</h2>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <p>State: <span id="auction-state" class="state waiting">WAITING</span></p>
+        <span style="font-size: 1.2rem; font-weight: bold; color: #ffa600;">⏱️ <span id="auction-timer">--:--</span></span>
+      </div>
+    </div>
+
+    <!-- Component B: Live Bid Panel -->
+    <div class="card">
+      <h2>Component B: Live Bid Panel</h2>
+      <p>Highest Bid: <strong id="highest-amount">Rp0</strong></p>
+      <p>Top Bidder: <strong id="highest-bidder">-</strong></p>
+    </div>
+
+    <!-- Component C: Activity Log -->
+    <div class="card">
+      <h2>Component C: Activity Log & System Alerts</h2>
+      <ul id="event-log"></ul>
+    </div>
+
+    <!-- Command & Control Bridge -->
+    <div class="card">
+      <h2>Command & Control Bridge</h2>
+      <div>
+        <button id="btn-open" class="btn">Open Auction</button>
+      </div>
+      <hr style="border: 1px solid #2d3748; margin: 15px 0;">
+      <div>
+        <input type="text" id="join-auction-id" placeholder="Auction ID to Join" />
+        <button id="btn-join" class="btn">Join Auction</button>
+      </div>
+      <hr style="border: 1px solid #2d3748; margin: 15px 0;">
+      <div>
+        <input type="number" id="bid-amount" placeholder="Bid Amount" />
+        <button id="btn-bid" class="btn">Place Bid</button>
+      </div>
+      
+      <p id="command-response" style="color: #00ca65; font-weight: bold; margin-top: 15px;"></p>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
