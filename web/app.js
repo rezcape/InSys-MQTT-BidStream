@@ -547,6 +547,7 @@ function subscribeToTopics() {
     'auction/item/+/bid/highest',
     '$share/monitoring/auction/item/+/events',
     'system/announcement',
+    'system/auction_scheduler',
     'system/status',
     responseTopic,
     `client/${demoUser}/error`

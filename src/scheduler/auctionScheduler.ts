@@ -1,5 +1,5 @@
 import * as mqtt from 'mqtt';
-import { CatalogClient } from '../grpc/clients';
+import { catalogClient } from '../grpc/clients';
 
 interface SchedulerConfig {
   intervalSeconds: number; // How often to create new auctions
@@ -16,7 +16,7 @@ const scheduledAuctions = new Map<string, NodeJS.Timeout>(); // Track scheduled 
 
 async function getAvailableItems(): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    CatalogClient.GetItems({}, (err: any, response: any) => {
+    catalogClient.GetItems({}, (err: any, response: any) => {
       if (err) {
         console.log('[Scheduler] Using default items due to error:', err.message);
         // Fallback to default items if gRPC fails
