@@ -166,12 +166,12 @@ function trackBid(auctionId, amount, bidder) {
   if (!auctionStats.has(auctionId)) {
     // Try to find item info from fetched items
     let itemName = `Item ${auctionId.substring(0, 8)}`;
-    let imageUrl = '/images/placeholder.svg';
+    let imageUrl = '/images/placeholder.jpg';
     
     const foundItem = fetchedItems.find(item => item.id === auctionId);
     if (foundItem) {
       itemName = foundItem.name;
-      imageUrl = foundItem.image_url || '/images/placeholder.svg';
+      imageUrl = foundItem.image_url || '/images/placeholder.jpg';
     }
 
     auctionStats.set(auctionId, {
