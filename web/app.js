@@ -16,6 +16,13 @@ let lastRemainingSeconds = null;
 const pendingRequests = new Map();
 const responseTopic = `client/${demoUser}/response`;
 
+// ============= DATA TRACKING =============
+const auctionStats = new Map(); // { auctionId: { highest_bid, bidder_count, bid_history, status, remaining_time } }
+const bidderStats = new Map(); // { bidder: { bid_count, total_bid_value, last_bid_time } }
+const trendingBids = []; // Track bids over time for charting
+
+let biddingTrendChart = null;
+
 const dom = {
   connStatus: document.getElementById('conn-status'),
   auctionState: document.getElementById('auction-state'),
@@ -31,9 +38,18 @@ const dom = {
   bidAmount: document.getElementById('bid-amount'),
   btnBid: document.getElementById('btn-bid'),
   btnAdminAnnounce: document.getElementById('btn-admin-announce'),
-  commandResponse: document.getElementById('command-response')
+  commandResponse: document.getElementById('command-response'),
+
+  // New leaderboard & analytics DOM
+  topItemsList: document.getElementById('top-items-list'),
+  topBiddersList: document.getElementById('top-bidders-list'),
+  metricTotalBids: document.getElementById('metric-total-bids'),
+  metricAvgBid: document.getElementById('metric-avg-bid'),
+  metricVelocity: document.getElementById('metric-velocity'),
+  auctionStatusGrid: document.getElementById('auction-status-grid'),
 };
 
+// ============= HELPERS =============
 function startVisualCountdown() {
   if (countdownInterval) clearInterval(countdownInterval);
 
@@ -131,6 +147,220 @@ function summarizeAuctionEvent(payload) {
 
   return parts.length > 0 ? parts.join(' | ') : JSON.stringify(payload);
 }
+
+// ============= ANALYTICS TRACKING =============
+function trackBid(auctionId, amount, bidder) {
+  // Track auction stats
+  if (!auctionStats.has(auctionId)) {
+    auctionStats.set(auctionId, {
+      highest_bid: 0,
+      bidder_count: new Set(),
+      bid_history: [],
+      status: 'OPEN',
+      remaining_time: 180,
+    });
+  }
+
+  const auction = auctionStats.get(auctionId);
+  auction.highest_bid = Math.max(auction.highest_bid, amount);
+  auction.bidder_count.add(bidder);
+  auction.bid_history.push({ amount, bidder, timestamp: Date.now() });
+
+  // Track bidder stats
+  if (!bidderStats.has(bidder)) {
+    bidderStats.set(bidder, {
+      bid_count: 0,
+      total_bid_value: 0,
+      last_bid_time: Date.now(),
+    });
+  }
+
+  const bidderStat = bidderStats.get(bidder);
+  bidderStat.bid_count += 1;
+  bidderStat.total_bid_value += amount;
+  bidderStat.last_bid_time = Date.now();
+
+  // Track for trending
+  trendingBids.push({ amount, timestamp: Date.now() });
+
+  updateLeaderboards();
+  updateMetrics();
+  updateChart();
+  updateAuctionStatusGrid();
+}
+
+function updateLeaderboards() {
+  // Top 5 Items by highest bid
+  const topItems = Array.from(auctionStats.entries())
+    .sort((a, b) => b[1].highest_bid - a[1].highest_bid)
+    .slice(0, 5);
+
+  dom.topItemsList.innerHTML = topItems.map((entry, idx) => {
+    const [auctionId, stats] = entry;
+    return `
+      <div class="leaderboard-item">
+        <span class="rank">#${idx + 1}</span> 
+        ${auctionId.substring(0, 8)}... 
+        <span class="value">${formatRupiah(stats.highest_bid)}</span>
+      </div>
+    `;
+  }).join('');
+
+  if (topItems.length === 0) {
+    dom.topItemsList.innerHTML = '<div class="leaderboard-item"><span style="color: #666;">No auctions yet</span></div>';
+  }
+
+  // Top 5 Bidders by bid count
+  const topBidders = Array.from(bidderStats.entries())
+    .sort((a, b) => b[1].bid_count - a[1].bid_count)
+    .slice(0, 5);
+
+  dom.topBiddersList.innerHTML = topBidders.map((entry, idx) => {
+    const [bidder, stats] = entry;
+    return `
+      <div class="leaderboard-item">
+        <span class="rank">#${idx + 1}</span> 
+        ${bidder.substring(0, 12)}... 
+        <span class="value">${stats.bid_count} bids</span>
+      </div>
+    `;
+  }).join('');
+
+  if (topBidders.length === 0) {
+    dom.topBiddersList.innerHTML = '<div class="leaderboard-item"><span style="color: #666;">No bidders yet</span></div>';
+  }
+}
+
+function updateMetrics() {
+  const totalBids = Array.from(auctionStats.values()).reduce((sum, auction) => sum + auction.bid_history.length, 0);
+  
+  let totalAmount = 0;
+  let bidCount = 0;
+  auctionStats.forEach(auction => {
+    auction.bid_history.forEach(bid => {
+      totalAmount += bid.amount;
+      bidCount += 1;
+    });
+  });
+
+  const avgBid = bidCount > 0 ? Math.floor(totalAmount / bidCount) : 0;
+
+  // Velocity: bids per minute (last minute)
+  const now = Date.now();
+  const oneMinuteAgo = now - 60000;
+  const recentBids = trendingBids.filter(b => b.timestamp > oneMinuteAgo).length;
+
+  dom.metricTotalBids.textContent = totalBids.toString();
+  dom.metricAvgBid.textContent = formatRupiah(avgBid);
+  dom.metricVelocity.textContent = `${recentBids}/min`;
+}
+
+function updateChart() {
+  // Aggregate bids by 30-second windows for smooth trending
+  if (trendingBids.length === 0) return;
+
+  const now = Date.now();
+  const windowSize = 30000; // 30 seconds
+  const timeWindows = new Map();
+
+  trendingBids.forEach(bid => {
+    const windowKey = Math.floor(bid.timestamp / windowSize) * windowSize;
+    if (!timeWindows.has(windowKey)) {
+      timeWindows.set(windowKey, []);
+    }
+    timeWindows.get(windowKey).push(bid.amount);
+  });
+
+  const sortedWindows = Array.from(timeWindows.entries())
+    .sort((a, b) => a[0] - b[0])
+    .slice(-20); // Last 20 windows (~10 minutes)
+
+  const labels = sortedWindows.map(([timestamp]) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString();
+  });
+
+  const avgBids = sortedWindows.map(([, bids]) => {
+    return Math.floor(bids.reduce((a, b) => a + b, 0) / bids.length);
+  });
+
+  if (!biddingTrendChart) {
+    const ctx = document.getElementById('bidding-trend-chart')?.getContext('2d');
+    if (!ctx) return;
+
+    biddingTrendChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Average Bid Amount',
+          data: avgBids,
+          borderColor: '#2aa8ff',
+          backgroundColor: 'rgba(42, 168, 255, 0.1)',
+          tension: 0.4,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: '#00ca65',
+          pointBorderColor: '#2aa8ff',
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+        },
+        scales: {
+          y: {
+            beginAtZero: true,
+            ticks: { color: '#95a8c1', callback: (v) => formatRupiah(v) },
+            grid: { color: 'rgba(42, 168, 255, 0.1)' },
+          },
+          x: {
+            ticks: { color: '#95a8c1' },
+            grid: { color: 'rgba(42, 168, 255, 0.1)' },
+          }
+        }
+      }
+    });
+  } else {
+    biddingTrendChart.data.labels = labels;
+    biddingTrendChart.data.datasets[0].data = avgBids;
+    biddingTrendChart.update();
+  }
+}
+
+function updateAuctionStatusGrid() {
+  const auctions = Array.from(auctionStats.entries()).slice(0, 6); // Show top 6
+  
+  dom.auctionStatusGrid.innerHTML = auctions.map(([auctionId, stats]) => {
+    const statusClass = stats.status.toLowerCase();
+    return `
+      <div class="auction-card">
+        <div class="state ${statusClass}">${stats.status}</div>
+        <div class="auction-info">
+          <strong>Item:</strong> ${auctionId.substring(0, 8)}...
+        </div>
+        <div class="auction-info auction-price">
+          ${formatRupiah(stats.highest_bid)}
+        </div>
+        <div class="auction-info auction-time">
+          ⏱️ ${stats.remaining_time}s remaining
+        </div>
+        <div class="auction-info" style="color: #95a8c1; font-size: 0.8rem;">
+          👥 ${stats.bidder_count.size} bidders
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  if (auctions.length === 0) {
+    dom.auctionStatusGrid.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">No active auctions</div>';
+  }
+}
+
+// ============= MQTT COMMANDS =============
 
 function publishCommand(action, payload = {}, options = {}) {
   if (!mqttClient || !mqttClient.connected) {
@@ -289,7 +519,13 @@ function handleCommandResponse(commandName, payload) {
     case 'place_bid':
       showResponseStatus(payload?.message || 'Bid Placed!');
       if (payload?.current_highest !== undefined) {
-        dom.highestAmount.textContent = formatRupiah(payload.current_highest);
+        const bidAmount = payload.current_highest;
+        dom.highestAmount.textContent = formatRupiah(bidAmount);
+        // Track the bid we just placed
+        const auction = activeAuctionId || dom.joinAuctionId.value;
+        if (auction) {
+          trackBid(auction, bidAmount, demoUser);
+        }
       }
       logActivity(`BID: ${payload?.message || 'bid processed'}${payload?.current_highest ? ` | current_highest=${formatRupiah(payload.current_highest)}` : ''}`);
       break;
@@ -319,34 +555,50 @@ function handleAuctionTopic(topic, payload) {
       setAuctionState('CLOSING');
     }
 
-    logActivity(`STATUS: auction ${auctionId} -> ${statusValue || JSON.stringify(payload)}`);
+    // Update auction status in stats
+    if (auctionStats.has(auctionId)) {
+      auctionStats.get(auctionId).status = statusValue;
+    }
+
+    logActivity(`STATUS: auction ${auctionId.substring(0, 8)}... -> ${statusValue || JSON.stringify(payload)}`);
+    updateAuctionStatusGrid();
     return;
   }
 
   if (topic.endsWith('/bid/highest')) {
     if (payload?.amount !== undefined) {
       dom.highestAmount.textContent = formatRupiah(payload.amount);
+      // Track this bid
+      trackBid(auctionId, payload.amount, payload?.bidder || 'Anonymous');
     }
     if (payload?.bidder !== undefined) {
       dom.highestBidder.textContent = payload.bidder || 'Anonymous';
     }
     if (payload?.remaining_seconds !== undefined) {
       updateRemainingSeconds(payload.remaining_seconds);
+      if (auctionStats.has(auctionId)) {
+        auctionStats.get(auctionId).remaining_time = payload.remaining_seconds;
+      }
     }
 
-    logActivity(`HIGHEST BID: ${auctionId} -> ${formatRupiah(payload?.amount)} / ${payload?.bidder || 'Anonymous'}`);
+    logActivity(`HIGHEST BID: ${auctionId.substring(0, 8)}... -> ${formatRupiah(payload?.amount)} / ${payload?.bidder || 'Anonymous'}`);
     return;
   }
 
   if (topic.endsWith('/events')) {
     if (payload?.highest_amount !== undefined) {
       dom.highestAmount.textContent = formatRupiah(payload.highest_amount);
+      // Track this bid
+      trackBid(auctionId, payload.highest_amount, payload?.highest_bidder || 'Anonymous');
     }
     if (payload?.highest_bidder !== undefined) {
       dom.highestBidder.textContent = payload.highest_bidder || 'Anonymous';
     }
     if (payload?.remaining_seconds !== undefined) {
       updateRemainingSeconds(payload.remaining_seconds);
+      if (auctionStats.has(auctionId)) {
+        auctionStats.get(auctionId).remaining_time = payload.remaining_seconds;
+      }
     }
 
     if (payload?.event_type) {
@@ -357,6 +609,11 @@ function handleAuctionTopic(topic, payload) {
         setAuctionState('CLOSING');
       } else if (eventType.includes('CLOSED')) {
         setAuctionState('CLOSED');
+      }
+
+      // Update status in stats
+      if (auctionStats.has(auctionId)) {
+        auctionStats.get(auctionId).status = eventType;
       }
     }
 
@@ -455,6 +712,12 @@ function connectMqtt() {
     setConnectionStatus('Connected', true);
     logActivity(`System: MQTT connected to ${BROKER_URL}`);
     subscribeToTopics();
+
+    // Initialize leaderboards and chart
+    updateLeaderboards();
+    updateMetrics();
+    updateChart();
+    updateAuctionStatusGrid();
 
     mqttClient.publish('system/status', JSON.stringify({
       status: 'online',
