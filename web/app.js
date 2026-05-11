@@ -20,6 +20,7 @@ const responseTopic = `client/${demoUser}/response`;
 // ============= DATA TRACKING =============
 const auctionStats = new Map(); // { auctionId: { highest_bid, bidder_count, bid_history, status, remaining_time, item_name, image_url } }
 const bidderStats = new Map(); // { bidder: { bid_count, total_bid_value, last_bid_time } }
+const availableAuctions = new Map(); // { auctionId: { item_id, status, duration_seconds, remaining_seconds, created_at, countdown_timer } }
 const trendingBids = []; // Track bids over time for charting
 
 let biddingTrendChart = null;
@@ -393,6 +394,78 @@ function updateAuctionStatusGrid() {
   }
 }
 
+function updateAvailableAuctionsPanel() {
+  const panel = document.getElementById('available-auctions-panel');
+  if (!panel) return;
+
+  if (availableAuctions.size === 0) {
+    panel.innerHTML = '<div style="padding: 20px; text-align: center; color: #95a8c1; font-style: italic;">Waiting for auctions to be scheduled...</div>';
+    return;
+  }
+
+  const auctionsList = Array.from(availableAuctions.entries()).map(([auctionId, auctionData]) => {
+    const itemId = auctionData.item_id;
+    const remaining = Math.max(0, Math.ceil(auctionData.remaining_seconds));
+    const durationDisplay = `${remaining}s / ${auctionData.duration_seconds}s`;
+    
+    return `
+      <div class="available-auction-item" style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        background: rgba(30, 41, 59, 0.5);
+        margin-bottom: 10px;
+      ">
+        <div style="flex: 1;">
+          <div style="font-weight: bold; margin-bottom: 4px;">${auctionId.substring(0, 12)}...</div>
+          <div style="color: #95a8c1; font-size: 0.85rem;">Item: ${itemId}</div>
+          <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 4px;">⏱️ ${durationDisplay}</div>
+        </div>
+        <button class="join-auction-btn" data-auction-id="${auctionId}" style="
+          padding: 8px 16px;
+          background: #2aa8ff;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-weight: bold;
+          white-space: nowrap;
+          margin-left: 10px;
+        ">Join Auction</button>
+      </div>
+    `;
+  }).join('');
+
+  panel.innerHTML = auctionsList;
+
+  // Add click handlers to join buttons
+  panel.querySelectorAll('.join-auction-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const auctionId = btn.getAttribute('data-auction-id');
+      joinAuction(auctionId);
+    });
+  });
+}
+
+function joinAuction(auctionId) {
+  const auctionData = availableAuctions.get(auctionId);
+  if (!auctionData) {
+    showResponseStatus('Auction not found', true);
+    return;
+  }
+
+  // Publish join command via MQTT
+  publishCommand('join_auction', {
+    auction_id: auctionId,
+    item_id: auctionData.item_id,
+  });
+
+  logActivity(`📝 Attempting to join auction: ${auctionId.substring(0, 8)}...`);
+}
+
 // ============= MQTT COMMANDS =============
 
 function publishCommand(action, payload = {}, options = {}) {
@@ -670,6 +743,56 @@ function handleResponseTopic(topic, payload, packet) {
   handleCommandResponse(commandName, payload);
 }
 
+function handleSchedulerEvent(payload) {
+  const auctionId = payload?.auction_id;
+  const itemId = payload?.item_id;
+  const status = payload?.status;
+
+  if (!auctionId) return;
+
+  if (status === 'AUCTION_OPENED') {
+    // New auction created by scheduler
+    availableAuctions.set(auctionId, {
+      item_id: itemId,
+      status: 'AVAILABLE',
+      duration_seconds: payload?.duration_seconds || 180,
+      remaining_seconds: payload?.duration_seconds || 180,
+      created_at: payload?.created_at || new Date().toISOString(),
+      countdown_timer: null,
+    });
+
+    logActivity(`📢 NEW AUCTION AVAILABLE: ${auctionId.substring(0, 8)}... | Item: ${itemId}`);
+    updateAvailableAuctionsPanel();
+
+    // Start countdown timer
+    const auctionData = availableAuctions.get(auctionId);
+    const startTime = new Date(auctionData.created_at).getTime();
+    const durationMs = auctionData.duration_seconds * 1000;
+    
+    const timer = setInterval(() => {
+      const elapsed = (Date.now() - startTime) / 1000;
+      const remaining = Math.max(0, auctionData.duration_seconds - elapsed);
+      auctionData.remaining_seconds = remaining;
+      updateAvailableAuctionsPanel();
+
+      if (remaining <= 0) {
+        clearInterval(timer);
+      }
+    }, 1000);
+
+    auctionData.countdown_timer = timer;
+  } else if (status === 'AUCTION_CLOSED') {
+    // Auction closed by scheduler
+    const auction = availableAuctions.get(auctionId);
+    if (auction && auction.countdown_timer) {
+      clearInterval(auction.countdown_timer);
+    }
+    availableAuctions.delete(auctionId);
+    logActivity(`🔔 AUCTION CLOSED: ${auctionId.substring(0, 8)}...`);
+    updateAvailableAuctionsPanel();
+  }
+}
+
 function handleIncomingMessage(topic, rawMessage, packet) {
   const payload = extractPayload(rawMessage);
 
@@ -693,6 +816,11 @@ function handleIncomingMessage(topic, rawMessage, packet) {
   if (topic === 'system/announcement') {
     const message = payload?.message || payload?.text || JSON.stringify(payload);
     logActivity(`ANNOUNCEMENT: ${message}${payload?.role ? ` | role=${payload.role}` : ''}`);
+    return;
+  }
+
+  if (topic === 'system/auction_scheduler') {
+    handleSchedulerEvent(payload);
     return;
   }
 
