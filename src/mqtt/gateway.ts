@@ -6,15 +6,115 @@ import { authClient, biddingClient, catalogClient, unaryCall } from '../grpc/cli
 const activeAuctionStreams = new Map<string, grpc.ClientReadableStream<any>>();
 let catalogStream: grpc.ClientReadableStream<any> | undefined;
 
+const TOPIC_ALIAS = {
+  SYSTEM_STATUS: 1,
+  CATALOG_EVENTS: 2,
+  SYSTEM_ANNOUNCEMENT: 3,
+} as const;
+
+function toBuffer(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    return Buffer.from(value);
+  }
+
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+
+  return Buffer.from(String(value ?? ''));
+}
+
+function publishJson(
+  client: mqtt.MqttClient,
+  topic: string,
+  payload: unknown,
+  options: mqtt.IClientPublishOptions = {},
+): void {
+  client.publish(topic, JSON.stringify(payload), {
+    qos: options.qos ?? 1,
+    retain: options.retain ?? false,
+    properties: options.properties,
+  });
+}
+
+function publishReply(
+  client: mqtt.MqttClient,
+  replyTopics: string[],
+  payload: unknown,
+  packet?: mqtt.IPublishPacket,
+): void {
+  const uniqueTopics = [...new Set(replyTopics.filter(Boolean))];
+  const correlationData = packet?.properties?.correlationData;
+  const responseProperties: mqtt.IClientPublishOptions['properties'] = {
+    correlationData: correlationData ? toBuffer(correlationData) : undefined,
+    userProperties: {
+      response_from: 'mqtt-gateway',
+    },
+    messageExpiryInterval: 60,
+  };
+
+  for (const topic of uniqueTopics) {
+    client.publish(topic, JSON.stringify(payload), {
+      qos: 1,
+      retain: false,
+      properties: responseProperties,
+    });
+  }
+}
+
 export function startMqttGateway() {
   const brokerUrl = 'mqtt://broker.hivemq.com:1883';
   console.log(`[MQTT Gateway] Connecting to ${brokerUrl}...`);
-  const client = mqtt.connect(brokerUrl);
+  const client = mqtt.connect(brokerUrl, {
+    protocolVersion: 5,
+    reconnectPeriod: 3000,
+    clean: true,
+    properties: {
+      sessionExpiryInterval: 60,
+      receiveMaximum: 20,
+    },
+    will: {
+      topic: 'system/status',
+      payload: JSON.stringify({
+        status: 'offline',
+        role: 'gateway',
+        message: 'Gateway disconnected unexpectedly',
+      }),
+      qos: 1,
+      retain: true,
+      properties: {
+        userProperties: {
+          role: 'gateway',
+          state: 'offline',
+        },
+        messageExpiryInterval: 120,
+      },
+    },
+  });
 
   client.on('connect', () => {
     console.log('[MQTT Gateway] Connected to HiveMQ Broker.');
+    publishJson(client, 'system/status', {
+      status: 'online',
+      role: 'gateway',
+      message: 'Gateway connected successfully',
+    }, {
+      qos: 1,
+      retain: true,
+      properties: {
+        topicAlias: TOPIC_ALIAS.SYSTEM_STATUS,
+        userProperties: {
+          role: 'gateway',
+          state: 'online',
+        },
+      },
+    });
     // Subscribe to all incoming commands from clients
-    client.subscribe('client/+/command/+', (err) => {
+    client.subscribe('client/+/command/+', { qos: 1 }, (err) => {
       if (err) {
         console.error('[MQTT Gateway] Failed to subscribe to commands:', err);
       } else {
@@ -26,7 +126,7 @@ export function startMqttGateway() {
     startCatalogStream(client);
   });
 
-  client.on('message', async (topic, message) => {
+  client.on('message', async (topic, message, packet) => {
     // Topic format: client/{clientId}/command/{commandName}
     const topicParts = topic.split('/');
     if (topicParts.length !== 4 || topicParts[0] !== 'client' || topicParts[2] !== 'command') {
@@ -41,18 +141,25 @@ export function startMqttGateway() {
     try {
       payload = JSON.parse(message.toString());
     } catch (e) {
-      client.publish(`client/${clientId}/error`, JSON.stringify({ error: 'Invalid JSON payload' }));
+      publishReply(client, [
+        packet?.properties?.responseTopic ? String(packet.properties.responseTopic) : '',
+        `client/${clientId}/error`,
+      ], { error: 'Invalid JSON payload', command: commandName }, packet);
       return;
     }
 
     try {
-      await handleCommand(client, clientId, commandName, payload, replyTopic);
+      const responseTopic = packet?.properties?.responseTopic ? String(packet.properties.responseTopic) : replyTopic;
+      await handleCommand(client, clientId, commandName, payload, replyTopic, responseTopic, packet);
     } catch (err: any) {
       console.error(`[MQTT Gateway] Error handling ${commandName}:`, err.message);
-      client.publish(`client/${clientId}/error`, JSON.stringify({ 
-        command: commandName, 
-        error: err.message || 'Unknown error' 
-      }));
+      publishReply(client, [
+        packet?.properties?.responseTopic ? String(packet.properties.responseTopic) : '',
+        `client/${clientId}/error`,
+      ], {
+        command: commandName,
+        error: err.message || 'Unknown error',
+      }, packet);
     }
   });
 
@@ -64,7 +171,9 @@ async function handleCommand(
   clientId: string, 
   commandName: string, 
   payload: any, 
-  replyTopic: string
+  replyTopic: string,
+  responseTopic: string,
+  packet?: mqtt.IPublishPacket,
 ) {
   switch (commandName) {
     case 'register': {
@@ -72,7 +181,7 @@ async function handleCommand(
         username: payload.username,
         password: payload.password,
       });
-      client.publish(replyTopic, JSON.stringify(response));
+      publishReply(client, [replyTopic, responseTopic], response, packet);
       break;
     }
     case 'login': {
@@ -80,12 +189,12 @@ async function handleCommand(
         username: payload.username,
         password: payload.password,
       });
-      client.publish(replyTopic, JSON.stringify(response));
+      publishReply(client, [replyTopic, responseTopic], response, packet);
       break;
     }
     case 'get_items': {
       const response = await unaryCall(catalogClient, 'GetItems', {});
-      client.publish(replyTopic, JSON.stringify(response));
+      publishReply(client, [replyTopic, responseTopic], response, packet);
       break;
     }
     case 'open_auction': {
@@ -93,9 +202,9 @@ async function handleCommand(
         item_id: payload.item_id,
         duration_seconds: payload.duration_seconds,
       });
-      client.publish(replyTopic, JSON.stringify(response));
+      publishReply(client, [replyTopic, responseTopic], response, packet);
       // Start auction stream automatically when opened
-      startAuctionStream(client, payload.item_id, payload.token);
+      startAuctionStream(client, response.auction_id || payload.item_id, payload.token);
       break;
     }
     case 'join_auction': {
@@ -103,7 +212,7 @@ async function handleCommand(
       if (!activeAuctionStreams.has(auctionId)) {
         startAuctionStream(client, auctionId, payload.token);
       }
-      client.publish(replyTopic, JSON.stringify({ success: true, auction_id: auctionId }));
+      publishReply(client, [replyTopic, responseTopic], { success: true, auction_id: auctionId }, packet);
       break;
     }
     case 'place_bid': {
@@ -113,7 +222,7 @@ async function handleCommand(
         amount: Number(payload.amount),
         token: payload.token,
       });
-      client.publish(replyTopic, JSON.stringify(response));
+      publishReply(client, [replyTopic, responseTopic], response, packet);
       break;
     }
     default:
@@ -129,12 +238,29 @@ function startCatalogStream(client: mqtt.MqttClient) {
   
   stream.on('data', (event: any) => {
     // Publish catalog events
-    client.publish('catalog/events', JSON.stringify(event));
+    publishJson(client, 'catalog/events', event, {
+      qos: 1,
+      retain: false,
+      properties: {
+        topicAlias: TOPIC_ALIAS.CATALOG_EVENTS,
+        userProperties: {
+          source: 'catalog-service',
+        },
+      },
+    });
     
     // Also publish status as a retained message if auction opened/closed
     if (event.event_type === 'AUCTION_OPENED' || event.event_type === 'AUCTION_CLOSED') {
       const statusTopic = `auction/item/${event.auction_id}/status`;
-      client.publish(statusTopic, JSON.stringify({ status: event.event_type }), { retain: true });
+      publishJson(client, statusTopic, { status: event.event_type }, {
+        qos: 1,
+        retain: true,
+        properties: {
+          userProperties: {
+            source: 'catalog-service',
+          },
+        },
+      });
     }
   });
 
@@ -156,19 +282,43 @@ function startAuctionStream(client: mqtt.MqttClient, auctionId: string, token: s
 
   stream.on('data', (update: any) => {
     // Broadcast all updates to the events stream
-    client.publish(`auction/item/${auctionId}/events`, JSON.stringify(update));
+    publishJson(client, `auction/item/${auctionId}/events`, update, {
+      qos: 1,
+      retain: false,
+      properties: {
+        userProperties: {
+          source: 'bidding-service',
+        },
+      },
+    });
     
     // Broadcast the highest bid specifically with retain so new joiners see it instantly
     if (update.highest_amount !== undefined) {
-      client.publish(`auction/item/${auctionId}/bid/highest`, JSON.stringify({
+      publishJson(client, `auction/item/${auctionId}/bid/highest`, {
         bidder: update.highest_bidder,
         amount: update.highest_amount,
         remaining_seconds: update.remaining_seconds
-      }), { retain: true });
+      }, {
+        qos: 1,
+        retain: true,
+        properties: {
+          userProperties: {
+            source: 'bidding-service',
+          },
+        },
+      });
     }
 
     if (update.event_type === 'AUCTION_CLOSED') {
-      client.publish(`auction/item/${auctionId}/status`, JSON.stringify({ status: 'CLOSED' }), { retain: true });
+      publishJson(client, `auction/item/${auctionId}/status`, { status: 'CLOSED' }, {
+        qos: 1,
+        retain: true,
+        properties: {
+          userProperties: {
+            source: 'bidding-service',
+          },
+        },
+      });
       activeAuctionStreams.delete(auctionId);
       stream.cancel();
     }

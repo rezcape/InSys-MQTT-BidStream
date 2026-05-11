@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Event-Driven Web UI Demo</title>
+  <title>MQTT Auction Dashboard</title>
   <!-- Assuming existing styles.css is present -->
   <link rel="stylesheet" href="./styles.css" />
   <style>
@@ -35,7 +35,7 @@
 </head>
 <body>
   <div class="container">
-    <h1>WebSocket UI</h1>
+    <h1>MQTT Auction UI</h1>
     <span id="conn-status" class="status-conn disconnected">Disconnected</span>
 
     <!-- Component A: Auction Status -->
@@ -60,6 +60,19 @@
       <ul id="event-log"></ul>
     </div>
 
+    <!-- Component D: Admin Publisher -->
+    <div class="card">
+      <h2>Component D: Admin Publisher</h2>
+      <p style="margin-top: 0; color: #95a8c1;">Role ini dipakai sebagai publisher ketiga untuk mengirim announcement/monitoring message ke MQTT.</p>
+      <div>
+        <input type="text" id="admin-announce" placeholder="Tulis announcement admin" style="width: 100%; margin-bottom: 10px;" />
+      </div>
+      <div>
+        <button id="btn-admin-announce" class="btn">Publish Announcement</button>
+      </div>
+      <p style="margin: 10px 0 0; color: #95a8c1; font-size: 0.9rem;">Topic: <strong>system/announcement</strong></p>
+    </div>
+
     <!-- Command & Control Bridge -->
     <div class="card">
       <h2>Command & Control Bridge</h2>
@@ -81,6 +94,7 @@
     </div>
   </div>
 
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>
