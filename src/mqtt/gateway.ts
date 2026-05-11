@@ -197,6 +197,48 @@ async function handleCommand(
       publishReply(client, [replyTopic, responseTopic], response, packet);
       break;
     }
+    case 'add_item': {
+      const response = await unaryCall(catalogClient, 'AddItem', {
+        name: payload.name,
+        description: payload.description,
+        starting_price: Number(payload.starting_price),
+        owner: payload.owner,
+        image_url: payload.image_url,
+      });
+      publishReply(client, [replyTopic, responseTopic], response, packet);
+      break;
+    }
+    case 'create_auction': {
+      const itemResponse = await unaryCall(catalogClient, 'AddItem', {
+        name: payload.name,
+        description: payload.description,
+        starting_price: Number(payload.starting_price),
+        owner: payload.owner,
+        image_url: payload.image_url,
+      });
+
+      const auctionResponse = await unaryCall(catalogClient, 'OpenAuction', {
+        item_id: itemResponse.item_id,
+        duration_seconds: payload.duration_seconds,
+      });
+
+      publishReply(client, [replyTopic, responseTopic], {
+        success: true,
+        item_id: itemResponse.item_id,
+        auction_id: auctionResponse.auction_id,
+        message: auctionResponse.message,
+        item: {
+          id: itemResponse.item_id,
+          name: payload.name,
+          description: payload.description,
+          starting_price: Number(payload.starting_price),
+          owner: payload.owner,
+          image_url: payload.image_url,
+        },
+      }, packet);
+      startAuctionStream(client, auctionResponse.auction_id || itemResponse.item_id, payload.token);
+      break;
+    }
     case 'open_auction': {
       const response = await unaryCall(catalogClient, 'OpenAuction', {
         item_id: payload.item_id,

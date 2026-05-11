@@ -1,8 +1,8 @@
 {
-  "name": "insys-websocket-bidstream",
+  "name": "insys-mqtt-bidstream",
   "version": "1.0.0",
   "private": true,
-  "description": "WebSocket gateway for InSys gRPC BidStream",
+  "description": "MQTT gateway for InSys gRPC BidStream",
   "main": "dist/index.js",
   "scripts": {
     "setup": "npm install && npm --prefix grpc-backend install",

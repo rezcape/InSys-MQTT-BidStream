@@ -20,9 +20,9 @@ const biddingClient = new biddingProto.bidding.BiddingService(
 
 // In-memory item database (seed data)
 const itemDatabase = new Map([
-  ['item-001', { id: 'item-001', name: 'Lukisan Raden Saleh', description: 'Karya asli abad ke-19', starting_price: 500000000, image_url: '/images/painting.jpg' }],
-  ['item-002', { id: 'item-002', name: 'Jam Tangan Vintage Rolex', description: 'Seri 1965, kondisi prima', starting_price: 150000000, image_url: '/images/watch.jpg' }],
-  ['item-003', { id: 'item-003', name: 'Koin Kuno Majapahit', description: 'Koleksi langka', starting_price: 75000000, image_url: '/images/coin.jpg' }],
+  ['item-001', { id: 'item-001', name: 'Lukisan Raden Saleh', description: 'Karya asli abad ke-19', starting_price: 500000000, owner: 'Museum Nasional', image_url: '/images/painting.jpg' }],
+  ['item-002', { id: 'item-002', name: 'Jam Tangan Vintage Rolex', description: 'Seri 1965, kondisi prima', starting_price: 150000000, owner: 'Collector House', image_url: '/images/watch.jpg' }],
+  ['item-003', { id: 'item-003', name: 'Koin Kuno Majapahit', description: 'Koleksi langka', starting_price: 75000000, owner: 'Arkeolog Pribadi', image_url: '/images/coin.jpg' }],
 ]);
 
 // Active auction rooms
@@ -47,7 +47,7 @@ export const catalogHandlers = {
   },
 
   AddItem: (call: any, callback: any) => {
-    const { name, description, starting_price, image_url } = call.request;
+    const { name, description, starting_price, owner, image_url } = call.request;
 
     if (!name || !String(name).trim()) {
       return callback({
@@ -70,7 +70,8 @@ export const catalogHandlers = {
       name: String(name).trim(),
       description: String(description || '').trim(),
       starting_price: price,
-      image_url: String(image_url || '/images/placeholder.jpg').trim(),
+      owner: String(owner || 'Anonymous').trim(),
+      image_url: String(image_url || '/images/painting.jpg').trim(),
     });
 
     console.log(`[Catalog] New item added: ${itemId} (${name})`);
@@ -172,6 +173,8 @@ export const catalogHandlers = {
           auction_id: auctionId,
           item_id: room.itemId,
           item_name: room.itemName,
+          item_owner: item.owner,
+          image_url: item.image_url,
           starting_price: room.startingPrice,
           duration_seconds: room.durationSeconds,
           event_type: 'AUCTION_OPENED',
@@ -236,6 +239,8 @@ export const catalogHandlers = {
       item_name: room.itemName,
       item_description: item?.description || '',
       starting_price: room.startingPrice,
+      owner: item?.owner || '',
+      image_url: item?.image_url || '',
       is_open: room.isOpen,
     });
   },

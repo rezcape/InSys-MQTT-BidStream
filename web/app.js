@@ -6,6 +6,7 @@ const correlationEncoder = new TextEncoder();
 const randomSuffix = Math.random().toString(16).slice(2, 8);
 const demoUser = `user_${Date.now().toString().slice(-6)}_${randomSuffix}`;
 const clientId = `person2_${demoUser}_${randomSuffix}`;
+const DEFAULT_ITEM_IMAGE = '/images/painting.jpg';
 
 let mqttClient = null;
 let activeAuctionId = localStorage.getItem('sync_auction_id') || '';
@@ -28,13 +29,19 @@ let biddingTrendChart = null;
 const dom = {
   connStatus: document.getElementById('conn-status'),
   auctionState: document.getElementById('auction-state'),
-  auctionTimer: document.getElementById('auction-timer'),
+  auctionTimer: document.getElementById('auction-timer') || document.getElementById('timer-text'),
   highestAmount: document.getElementById('highest-amount'),
   highestBidder: document.getElementById('highest-bidder'),
   eventLog: document.getElementById('event-log'),
   adminAnnounce: document.getElementById('admin-announce'),
   
   btnOpen: document.getElementById('btn-open'),
+  createItemName: document.getElementById('create-item-name'),
+  createItemPrice: document.getElementById('create-item-price'),
+  createItemOwner: document.getElementById('create-item-owner'),
+  createItemImage: document.getElementById('create-item-image'),
+  createAuctionDuration: document.getElementById('create-auction-duration'),
+  btnCreateAuction: document.getElementById('btn-create-auction'),
   joinAuctionId: document.getElementById('join-auction-id'),
   btnJoin: document.getElementById('btn-join'),
   bidAmount: document.getElementById('bid-amount'),
@@ -56,13 +63,25 @@ const dom = {
 };
 
 // ============= HELPERS =============
+function resolveAuctionArtwork(auctionId, itemId = '') {
+  const auctionData = availableAuctions.get(auctionId);
+  const resolvedItemId = itemId || auctionData?.item_id || '';
+  const fetchedItem = fetchedItems.find((item) => item.id === resolvedItemId);
+
+  return {
+    itemName: auctionData?.item_name || fetchedItem?.name || `Item ${auctionId.substring(0, 8)}`,
+    imageUrl: auctionData?.image_url || fetchedItem?.image_url || DEFAULT_ITEM_IMAGE,
+  };
+}
+
 function startVisualCountdown() {
   if (countdownInterval) clearInterval(countdownInterval);
 
   if (!Number.isFinite(lastRemainingSeconds) || lastRemainingSeconds < 0) {
-    if (dom.auctionTimer) {
-      dom.auctionTimer.textContent = '--:--';
-    }
+    const timerText = document.getElementById('timer-text');
+    const pieLabel = document.getElementById('pie-label');
+    if (timerText) timerText.textContent = '--:--';
+    if (pieLabel) pieLabel.textContent = '--:--';
     return;
   }
 
@@ -71,7 +90,11 @@ function startVisualCountdown() {
   const renderRemaining = () => {
     const m = Math.floor(remaining / 60).toString().padStart(2, '0');
     const s = (remaining % 60).toString().padStart(2, '0');
-    dom.auctionTimer.textContent = `${m}:${s}`;
+    const text = `${m}:${s}`;
+    const timerText = document.getElementById('timer-text');
+    const pieLabel = document.getElementById('pie-label');
+    if (timerText) timerText.textContent = text;
+    if (pieLabel) pieLabel.textContent = text;
   };
 
   renderRemaining();
@@ -124,7 +147,7 @@ function ensureAuctionContext(auctionId) {
   // Update current item display
   const auctionStats_entry = auctionStats.get(auctionId);
   if (auctionStats_entry) {
-    dom.currentItemImage.src = auctionStats_entry.image_url;
+    dom.currentItemImage.src = auctionStats_entry.image_url || DEFAULT_ITEM_IMAGE;
     dom.currentItemName.textContent = auctionStats_entry.item_name;
   }
 }
@@ -136,7 +159,35 @@ function updateRemainingSeconds(value) {
   }
 
   lastRemainingSeconds = Math.max(0, Math.floor(numericValue));
+  // update textual countdown
   startVisualCountdown();
+
+  // update pie timer graphic and legend
+  try {
+    const pieRing = document.getElementById('pie-ring');
+    const pieLabel = document.getElementById('pie-label');
+    const timerText = document.getElementById('timer-text');
+    if (pieRing && pieLabel && timerText) {
+      const stats = auctionStats.get(activeAuctionId) || {};
+      const duration = Number(stats?.remaining_time || stats?.duration_seconds || 180);
+      const remaining = Math.max(0, Math.floor(numericValue));
+      const pct = duration > 0 ? Math.max(0, Math.min(1, remaining / duration)) : 0;
+      const dash = Math.round(pct * 100);
+      pieRing.setAttribute('stroke-dasharray', `${dash},100`);
+      // color thresholds: >=50% green, >=20% orange, else red
+      if (pct >= 0.5) pieRing.setAttribute('stroke', '#00ca65');
+      else if (pct >= 0.2) pieRing.setAttribute('stroke', '#ffa600');
+      else pieRing.setAttribute('stroke', '#ca0032');
+
+      const m = Math.floor(remaining / 60).toString().padStart(2, '0');
+      const s = (remaining % 60).toString().padStart(2, '0');
+      const text = `${m}:${s}`;
+      pieLabel.textContent = text;
+      timerText.textContent = text;
+    }
+  } catch (e) {
+    // ignore
+  }
 }
 
 function summarizeAuctionEvent(payload) {
@@ -165,15 +216,7 @@ function summarizeAuctionEvent(payload) {
 function trackBid(auctionId, amount, bidder) {
   // Track auction stats
   if (!auctionStats.has(auctionId)) {
-    // Try to find item info from fetched items
-    let itemName = `Item ${auctionId.substring(0, 8)}`;
-    let imageUrl = '/images/placeholder.jpg';
-    
-    const foundItem = fetchedItems.find(item => item.id === auctionId);
-    if (foundItem) {
-      itemName = foundItem.name;
-      imageUrl = foundItem.image_url || '/images/placeholder.jpg';
-    }
+    const artwork = resolveAuctionArtwork(auctionId);
 
     auctionStats.set(auctionId, {
       highest_bid: 0,
@@ -181,8 +224,8 @@ function trackBid(auctionId, amount, bidder) {
       bid_history: [],
       status: 'OPEN',
       remaining_time: 180,
-      item_name: itemName,
-      image_url: imageUrl,
+      item_name: artwork.itemName,
+      image_url: artwork.imageUrl,
     });
   }
 
@@ -225,7 +268,7 @@ function updateLeaderboards() {
     return `
       <div class="leaderboard-item">
         <div style="display: flex; gap: 10px; align-items: center;">
-          <img src="${stats.image_url}" alt="${stats.item_name}" style="width: 40px; height: 40px; border-radius: 4px; object-fit: cover; background: #0a0f18;">
+          <img src="${stats.image_url || DEFAULT_ITEM_IMAGE}" alt="${stats.item_name}" style="width: 40px; height: 40px; border-radius: 4px; object-fit: cover; background: #0a0f18;">
           <div style="flex: 1;">
             <span class="rank">#${idx + 1}</span>
             <div style="font-size: 0.85rem; color: #95a8c1;">${stats.item_name.substring(0, 15)}</div>
@@ -369,7 +412,7 @@ function updateAuctionStatusGrid() {
     const statusClass = stats.status.toLowerCase();
     return `
       <div class="auction-card">
-        <img src="${stats.image_url}" alt="${stats.item_name}" style="width: 100%; height: 120px; object-fit: cover; border-radius: 4px 4px 0 0; background: #0a0f18;">
+        <img src="${stats.image_url || DEFAULT_ITEM_IMAGE}" alt="${stats.item_name}" style="width: 100%; height: 120px; object-fit: cover; border-radius: 4px 4px 0 0; background: #0a0f18;">
         <div style="padding: 10px;">
           <div class="state ${statusClass}" style="margin-bottom: 8px;">${stats.status}</div>
           <div class="auction-info" style="font-weight: bold; margin-bottom: 5px;">
@@ -398,18 +441,29 @@ function updateAvailableAuctionsPanel() {
   const panel = document.getElementById('available-auctions-panel');
   if (!panel) return;
 
+  // start with + tile
+  const plusTile = `
+    <div id="create-plus-tile" style="display:flex;align-items:center;justify-content:center;height:80px;border:1px dashed #2aa8ff;border-radius:6px;background:rgba(10,15,24,0.4);cursor:pointer;font-size:28px;color:#2aa8ff;">
+      +
+    </div>
+  `;
+
   if (availableAuctions.size === 0) {
-    panel.innerHTML = '<div style="padding: 20px; text-align: center; color: #95a8c1; font-style: italic;">Waiting for auctions to be scheduled...</div>';
+    panel.innerHTML = plusTile + '<div style="padding: 20px; text-align: center; color: #95a8c1; font-style: italic;">Waiting for auctions to be scheduled...</div>';
+    const plusEl = document.getElementById('create-plus-tile');
+    if (plusEl) plusEl.addEventListener('click', () => openCreateAuctionModal());
     return;
   }
 
   const auctionsList = Array.from(availableAuctions.entries()).map(([auctionId, auctionData]) => {
     const itemId = auctionData.item_id;
+    const itemName = auctionData.item_name || `Item ${itemId?.substring(0, 8)}`;
+    const imageUrl = auctionData.image_url || DEFAULT_ITEM_IMAGE;
     const remaining = Math.max(0, Math.ceil(auctionData.remaining_seconds));
     const durationDisplay = `${remaining}s / ${auctionData.duration_seconds}s`;
     
     return `
-      <div class="available-auction-item" style="
+      <div class="available-auction-item" data-auction-id="${auctionId}" style="
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -417,11 +471,12 @@ function updateAvailableAuctionsPanel() {
         border: 1px solid #334155;
         border-radius: 6px;
         background: rgba(30, 41, 59, 0.5);
-        margin-bottom: 10px;
+        margin-bottom: 10px; cursor:pointer;
       ">
+        <img src="${imageUrl}" alt="${itemName}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 4px; background: #0a0f18; margin-right: 12px;">
         <div style="flex: 1;">
           <div style="font-weight: bold; margin-bottom: 4px;">${auctionId.substring(0, 12)}...</div>
-          <div style="color: #95a8c1; font-size: 0.85rem;">Item: ${itemId}</div>
+          <div style="color: #00ca65; font-size: 0.9rem;">${itemName}</div>
           <div style="color: #cbd5e1; font-size: 0.8rem; margin-top: 4px;">⏱️ ${durationDisplay}</div>
         </div>
         <button class="join-auction-btn" data-auction-id="${auctionId}" style="
@@ -434,18 +489,29 @@ function updateAvailableAuctionsPanel() {
           font-weight: bold;
           white-space: nowrap;
           margin-left: 10px;
-        ">Join Auction</button>
+        ">Join</button>
       </div>
     `;
   }).join('');
 
-  panel.innerHTML = auctionsList;
+  panel.innerHTML = plusTile + auctionsList;
 
-  // Add click handlers to join buttons
+  const plusEl = document.getElementById('create-plus-tile');
+  if (plusEl) plusEl.addEventListener('click', () => openCreateAuctionModal());
+
+  // Add click handlers to join buttons and also click whole tile to join
   panel.querySelectorAll('.join-auction-btn').forEach(btn => {
     btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       const auctionId = btn.getAttribute('data-auction-id');
       joinAuction(auctionId);
+    });
+  });
+
+  panel.querySelectorAll('.available-auction-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const id = el.getAttribute('data-auction-id');
+      if (id) joinAuction(id);
     });
   });
 }
@@ -525,8 +591,10 @@ function logActivity(message) {
 
 function setAuctionState(state) {
   const stateStr = String(state).toUpperCase();
-  dom.auctionState.textContent = stateStr;
-  dom.auctionState.className = `state ${stateStr.toLowerCase()}`;
+  if (dom.auctionState) {
+    dom.auctionState.textContent = stateStr;
+    dom.auctionState.className = `state ${stateStr.toLowerCase()}`;
+  }
 
   if (stateStr === 'OPEN') {
     if (Number.isFinite(lastRemainingSeconds)) {
@@ -614,6 +682,35 @@ function handleCommandResponse(commandName, payload) {
       break;
     }
 
+    case 'create_auction': {
+      const auctionId = payload?.auction_id || payload?.data?.auction_id;
+      const item = payload?.item || payload?.data?.item;
+
+      if (item && item.id) {
+        fetchedItems = [item, ...fetchedItems.filter((existing) => existing.id !== item.id)];
+        fetchedItemId = item.id;
+      }
+
+      if (auctionId && item && !auctionStats.has(auctionId)) {
+        auctionStats.set(auctionId, {
+          highest_bid: Number(item.starting_price || 0),
+          bidder_count: new Set(),
+          bid_history: [],
+          status: 'OPEN',
+          remaining_time: Number(payload?.duration_seconds || payload?.data?.duration_seconds || 180),
+          item_name: item.name || `Item ${auctionId.substring(0, 8)}`,
+          image_url: item.image_url || DEFAULT_ITEM_IMAGE,
+        });
+      }
+
+      if (auctionId) {
+        ensureAuctionContext(auctionId);
+        setAuctionState('OPEN');
+        logActivity(`AUCTION: created -> ${auctionId}`);
+      }
+      break;
+    }
+
     case 'join_auction': {
       const auctionId = payload?.auction_id || payload?.data?.auction_id || activeAuctionId;
       if (auctionId) {
@@ -628,7 +725,7 @@ function handleCommandResponse(commandName, payload) {
       showResponseStatus(payload?.message || 'Bid Placed!');
       if (payload?.current_highest !== undefined) {
         const bidAmount = payload.current_highest;
-        dom.highestAmount.textContent = formatRupiah(bidAmount);
+        if (dom.highestAmount) dom.highestAmount.textContent = formatRupiah(bidAmount);
         // Track the bid we just placed
         const auction = activeAuctionId || dom.joinAuctionId.value;
         if (auction) {
@@ -675,12 +772,12 @@ function handleAuctionTopic(topic, payload) {
 
   if (topic.endsWith('/bid/highest')) {
     if (payload?.amount !== undefined) {
-      dom.highestAmount.textContent = formatRupiah(payload.amount);
+      if (dom.highestAmount) dom.highestAmount.textContent = formatRupiah(payload.amount);
       // Track this bid
       trackBid(auctionId, payload.amount, payload?.bidder || 'Anonymous');
     }
     if (payload?.bidder !== undefined) {
-      dom.highestBidder.textContent = payload.bidder || 'Anonymous';
+      if (dom.highestBidder) dom.highestBidder.textContent = payload.bidder || 'Anonymous';
     }
     if (payload?.remaining_seconds !== undefined) {
       updateRemainingSeconds(payload.remaining_seconds);
@@ -695,12 +792,12 @@ function handleAuctionTopic(topic, payload) {
 
   if (topic.endsWith('/events')) {
     if (payload?.highest_amount !== undefined) {
-      dom.highestAmount.textContent = formatRupiah(payload.highest_amount);
+      if (dom.highestAmount) dom.highestAmount.textContent = formatRupiah(payload.highest_amount);
       // Track this bid
       trackBid(auctionId, payload.highest_amount, payload?.highest_bidder || 'Anonymous');
     }
     if (payload?.highest_bidder !== undefined) {
-      dom.highestBidder.textContent = payload.highest_bidder || 'Anonymous';
+      if (dom.highestBidder) dom.highestBidder.textContent = payload.highest_bidder || 'Anonymous';
     }
     if (payload?.remaining_seconds !== undefined) {
       updateRemainingSeconds(payload.remaining_seconds);
@@ -747,6 +844,8 @@ function handleResponseTopic(topic, payload, packet) {
 function handleSchedulerEvent(payload) {
   const auctionId = payload?.auction_id;
   const itemId = payload?.item_id;
+  const itemName = payload?.item_name || `Item ${itemId?.substring(0, 8)}`;
+  const imageUrl = payload?.image_url || DEFAULT_ITEM_IMAGE;
   const status = payload?.status;
 
   if (!auctionId) return;
@@ -760,9 +859,24 @@ function handleSchedulerEvent(payload) {
       remaining_seconds: payload?.duration_seconds || 180,
       created_at: payload?.created_at || new Date().toISOString(),
       countdown_timer: null,
+      item_name: itemName,
+      image_url: imageUrl,
     });
 
-    logActivity(`📢 NEW AUCTION AVAILABLE: ${auctionId.substring(0, 8)}... | Item: ${itemId}`);
+    // Initialize auction stats with item info
+    if (!auctionStats.has(auctionId)) {
+      auctionStats.set(auctionId, {
+        highest_bid: 0,
+        bidder_count: new Set(),
+        bid_history: [],
+        status: 'OPEN',
+        remaining_time: payload?.duration_seconds || 180,
+        item_name: itemName,
+        image_url: imageUrl,
+      });
+    }
+
+    logActivity(`📢 NEW AUCTION AVAILABLE: ${auctionId.substring(0, 8)}... | Item: ${itemName}`);
     updateAvailableAuctionsPanel();
 
     // Start countdown timer
@@ -946,6 +1060,32 @@ function openAuction() {
   });
 }
 
+function createAuction() {
+  const name = dom.createItemName.value.trim();
+  const startingPrice = Number(dom.createItemPrice.value);
+  const owner = dom.createItemOwner.value.trim();
+  const imageUrl = dom.createItemImage.value.trim();
+  const durationSeconds = Number(dom.createAuctionDuration.value || 180);
+
+  if (!name) {
+    alert('Nama barang wajib diisi');
+    return;
+  }
+
+  if (!Number.isFinite(startingPrice) || startingPrice <= 0) {
+    alert('Lowest bid harus angka positif');
+    return;
+  }
+
+  publishCommand('create_auction', {
+    name,
+    starting_price: startingPrice,
+    owner: owner || 'Anonymous',
+    image_url: imageUrl || DEFAULT_ITEM_IMAGE,
+    duration_seconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : 180,
+  });
+}
+
 function joinAuction() {
   const auctionId = dom.joinAuctionId.value.trim();
   if (!auctionId) {
@@ -1025,6 +1165,9 @@ function publishAdminAnnouncement() {
 }
 
 dom.btnOpen.addEventListener('click', openAuction);
+if (dom.btnCreateAuction) {
+  dom.btnCreateAuction.addEventListener('click', createAuction);
+}
 dom.btnJoin.addEventListener('click', joinAuction);
 dom.btnBid.addEventListener('click', placeBid);
 dom.btnAdminAnnounce.addEventListener('click', publishAdminAnnouncement);

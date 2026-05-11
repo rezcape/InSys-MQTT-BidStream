@@ -6,6 +6,14 @@ interface SchedulerConfig {
   auctionDurationSeconds: number; // How long each auction lasts
 }
 
+interface ItemInfo {
+  id: string;
+  name: string;
+  image_url?: string;
+  description?: string;
+  starting_price?: number;
+}
+
 const config: SchedulerConfig = {
   intervalSeconds: 15, // Create new auction every 15 seconds
   auctionDurationSeconds: 180, // Each auction lasts 3 minutes
@@ -14,22 +22,27 @@ const config: SchedulerConfig = {
 const activeAuctionItems = new Set<string>(); // Track which items are in active auctions
 const scheduledAuctions = new Map<string, NodeJS.Timeout>(); // Track scheduled close timers
 
-async function getAvailableItems(): Promise<string[]> {
+// Default item catalog with images
+const DEFAULT_ITEMS: ItemInfo[] = [
+  { id: 'item-001', name: 'Lukisan Raden Saleh', description: 'Karya asli abad ke-19', starting_price: 500000000, image_url: '/images/painting.jpg' },
+  { id: 'item-002', name: 'Jam Tangan Vintage Rolex', description: 'Seri 1965, kondisi prima', starting_price: 150000000, image_url: '/images/watch.jpg' },
+  { id: 'item-003', name: 'Koin Kuno Majapahit', description: 'Koleksi langka', starting_price: 75000000, image_url: '/images/coin.jpg' },
+];
+
+async function getAvailableItems(): Promise<ItemInfo[]> {
   return new Promise((resolve, reject) => {
     catalogClient.GetItems({}, (err: any, response: any) => {
       if (err) {
         console.log('[Scheduler] Using default items due to error:', err.message);
         // Fallback to default items if gRPC fails
-        const defaultItems = ['item-001', 'item-002', 'item-003'];
-        const available = defaultItems.filter(id => !activeAuctionItems.has(id));
-        return resolve(available.length > 0 ? available : defaultItems);
+        const available = DEFAULT_ITEMS.filter(item => !activeAuctionItems.has(item.id));
+        return resolve(available);
       }
       
       const items = response?.items || [];
-      const itemIds = items.map((item: any) => item.id);
-      const available = itemIds.filter((id: string) => !activeAuctionItems.has(id));
+      const available = items.filter((item: any) => !activeAuctionItems.has(item.id));
       
-      resolve(available.length > 0 ? available : itemIds);
+      resolve(available);
     });
   });
 }
@@ -51,12 +64,14 @@ async function createRandomAuction(mqttClient: mqtt.MqttClient): Promise<void> {
     const auctionId = `auction-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     
     // Track item as active
-    activeAuctionItems.add(randomItem);
+    activeAuctionItems.add(randomItem.id);
 
-    // Publish auction created event
+    // Publish auction created event with full item info
     const auctionEvent = {
       auction_id: auctionId,
-      item_id: randomItem,
+      item_id: randomItem.id,
+      item_name: randomItem.name,
+      image_url: randomItem.image_url || '/images/painting.jpg',
       status: 'AUCTION_OPENED',
       duration_seconds: config.auctionDurationSeconds,
       remaining_seconds: config.auctionDurationSeconds,
@@ -70,11 +85,11 @@ async function createRandomAuction(mqttClient: mqtt.MqttClient): Promise<void> {
       { qos: 1, retain: false }
     );
 
-    console.log(`[Scheduler] Created auction: ${auctionId} for item: ${randomItem}`);
+    console.log(`[Scheduler] Created auction: ${auctionId} for item: ${randomItem.name}`);
 
     // Schedule auto-close after duration
     const closeTimer = setTimeout(() => {
-      activeAuctionItems.delete(randomItem);
+      activeAuctionItems.delete(randomItem.id);
       scheduledAuctions.delete(auctionId);
       
       // Publish auction closed event

@@ -17,6 +17,8 @@ message Item {
   string name = 2;
   string description = 3;
   double starting_price = 4;
+  string owner = 5;
+  string image_url = 6;
 }
 
 message GetItemsResponse {
@@ -27,6 +29,8 @@ message AddItemRequest {
   string name = 1;
   string description = 2;
   double starting_price = 3;
+  string owner = 4;
+  string image_url = 5;
 }
 
 message AddItemResponse {
